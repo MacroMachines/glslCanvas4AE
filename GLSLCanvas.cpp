@@ -86,15 +86,18 @@ namespace {
 		glUniform1i(glGetUniformLocation(program, targetName.c_str()), 0);
 	}
 	
-	void RenderGL(EffectRenderData *renderData, GLfloat width, GLfloat height, GLfloat time, A_FloatPoint mouse) {
+	void RenderGL(EffectRenderData *renderData, GLfloat width, GLfloat height, GLfloat time, A_FloatPoint mouse, GLuint tex0) {
 		
 		glClear(GL_COLOR_BUFFER_BIT);
+		
+		glBindTexture(GL_TEXTURE_2D, tex0);
 		
 		glUseProgram(renderData->program);
 		
 		glUniform2f(glGetUniformLocation(renderData->program, "u_resolution"),	width, height);
 		glUniform1f(glGetUniformLocation(renderData->program, "u_time"),		time);
 		glUniform2f(glGetUniformLocation(renderData->program, "u_mouse"),		mouse.x, mouse.y);
+		BindTextureToTarget(renderData->program, tex0, std::string("u_tex0"));
 
 		glBindVertexArray(vao);
 		RenderQuad(renderData);
@@ -120,6 +123,94 @@ namespace {
 		
 		
 		glFlush();
+	}
+	
+	GLuint UploadTexture(AEGP_SuiteHandler& suites,					// >>
+						//PF_PixelFormat			format,				// >>
+						PF_EffectWorld			*input_worldP,		// >>
+						PF_InData				*in_data)			// >>
+						//size_t& pixSizeOut,							// <<
+						//GLenum& glFmtOut,							// <<
+						//float& multiplier16bitOut)					// <<
+	{
+		// - upload to texture memory
+		// - we will convert on-the-fly from ARGB to RGBA, and also to pre-multiplied alpha,
+		// using a fragment shader
+#ifdef _DEBUG
+		GLint nUnpackAlignment;
+		::glGetIntegerv(GL_UNPACK_ALIGNMENT, &nUnpackAlignment);
+		assert(nUnpackAlignment == 4);
+#endif
+		
+		GLuint texture;
+		glGenTextures(1, &texture);
+		glBindTexture(GL_TEXTURE_2D, texture);
+		
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, (GLint)GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, (GLint)GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, (GLint)GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, (GLint)GL_CLAMP_TO_EDGE);
+		
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, input_worldP->width, input_worldP->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+		
+		//multiplier16bitOut = 1.0f;
+		//switch (format) {
+			/*
+			case PF_PixelFormat_ARGB128:
+			{
+				glFmtOut = GL_FLOAT;
+				pixSizeOut = sizeof(PF_PixelFloat);
+				
+				std::auto_ptr<PF_PixelFloat> bufferFloat(new PF_PixelFloat[input_worldP->width * input_worldP->height]);
+				CopyPixelFloat_t refcon = { bufferFloat.get(), input_worldP };
+				
+				CHECK(suites.IterateFloatSuite1()->iterate(in_data,
+														   0,
+														   input_worldP->height,
+														   input_worldP,
+														   nullptr,
+														   reinterpret_cast<void*>(&refcon),
+														   CopyPixelFloatIn,
+														   output_worldP));
+				
+				glPixelStorei(GL_UNPACK_ROW_LENGTH, input_worldP->width);
+				glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, input_worldP->width, input_worldP->height, GL_RGBA, GL_FLOAT, bufferFloat.get());
+				break;
+			}
+				
+			case PF_PixelFormat_ARGB64:
+			{
+				glFmtOut = GL_UNSIGNED_SHORT;
+				pixSizeOut = sizeof(PF_Pixel16);
+				multiplier16bitOut = 65535.0f / 32768.0f;
+				
+				glPixelStorei(GL_UNPACK_ROW_LENGTH, input_worldP->rowbytes / sizeof(PF_Pixel16));
+				PF_Pixel16 *pixelDataStart = NULL;
+				PF_GET_PIXEL_DATA16(input_worldP, NULL, &pixelDataStart);
+				glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, input_worldP->width, input_worldP->height, GL_RGBA, GL_UNSIGNED_SHORT, pixelDataStart);
+				break;
+			}
+			 */
+				
+			//case PF_PixelFormat_ARGB32:
+			//{
+				//glFmtOut = GL_UNSIGNED_BYTE;
+				//pixSizeOut = sizeof(PF_Pixel8);
+				
+				glPixelStorei(GL_UNPACK_ROW_LENGTH, input_worldP->rowbytes / sizeof(PF_Pixel8));
+				PF_Pixel8 *pixelDataStart = NULL;
+				PF_GET_PIXEL_DATA8(input_worldP, NULL, &pixelDataStart);
+				glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, input_worldP->width, input_worldP->height, GL_RGBA, GL_UNSIGNED_BYTE, pixelDataStart);
+				//break;
+			//}
+		//}
+		
+		glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+		
+		//unbind all textures
+		glBindTexture(GL_TEXTURE_2D, 0);
+		
+		return texture;
 	}
 	
 	std::string GetResourcesPath(PF_InData *in_data) {
@@ -283,6 +374,8 @@ GlobalSetup (
 	PF_ParamDef		*params[],
 	PF_LayerDef		*output )
 {
+	AEGP_SuiteHandler		suites(in_data->pica_basicP);
+	
 	out_data->my_version = PF_VERSION(	MAJOR_VERSION, 
 										MINOR_VERSION,
 										BUG_VERSION, 
@@ -315,6 +408,26 @@ GlobalSetup (
 			<< "OpenGL Renderer:		" << glGetString(GL_RENDERER) << std::endl
 			<< "OpenGL GLSL Versions:	" << glGetString(GL_SHADING_LANGUAGE_VERSION) << std::endl;
 		
+		// setup global data
+		EffectGlobalData	*globalData = NULL;
+		PF_Handle			globalDataH = suites.HandleSuite1()->host_new_handle(sizeof(EffectGlobalData));
+		if (globalDataH) {
+			globalData = reinterpret_cast<EffectGlobalData*>(suites.HandleSuite1()->host_lock_handle(globalDataH));
+			
+			if (globalData) {
+				globalData->initialized = TRUE;
+			}
+			if (in_data->appl_id != 'PrMr') {
+				// This is only needed for the AEGP suites, which Premiere Pro doesn't support
+				ERR(suites.UtilitySuite3()->AEGP_RegisterWithAEGP(NULL, STR(StrID_Name), &globalData->ID));
+			}
+			if (!err) {
+				out_data->global_data = globalDataH;
+			}
+			suites.HandleSuite1()->host_unlock_handle(globalDataH);
+		} else {
+			err = PF_Err_INTERNAL_STRUCT_DAMAGED;
+		}
 		
 		
 		
@@ -424,7 +537,20 @@ ParamsSetup (
 				  PF_ParamFlag_SUPERVISE,		// PARAM_FLAGS
 				  FILTER_SHOW_ERROR_DISK_ID);	// ID
 	
-	AEFX_CLR_STRUCT(def);
+//	AEFX_CLR_STRUCT(def);
+//	PF_ADD_LAYER("u_tex0", PF_LayerDefault_MYSELF, FILTER_TEX0_DISK_ID);
+//	
+//	AEFX_CLR_STRUCT(def);
+//	PF_ADD_LAYER("u_tex1", PF_LayerDefault_MYSELF, FILTER_TEX1_DISK_ID);
+//	
+//	AEFX_CLR_STRUCT(def);
+//	PF_ADD_LAYER("u_tex2", PF_LayerDefault_MYSELF, FILTER_TEX2_DISK_ID);
+//	
+//	AEFX_CLR_STRUCT(def);
+//	PF_ADD_LAYER("u_tex3", PF_LayerDefault_MYSELF, FILTER_TEX3_DISK_ID);
+//	
+//	AEFX_CLR_STRUCT(def);
+//	PF_ADD_LAYER("u_tex4", PF_LayerDefault_MYSELF, FILTER_TEX4_DISK_ID);
 	
 	out_data->num_params = FILTER_NUM_PARAMS;
 
@@ -593,8 +719,7 @@ Render(
 {
 	PF_Err				err			= PF_Err_NONE;
 	AEGP_SuiteHandler	suites(in_data->pica_basicP);
-	
-	EffectRenderData *renderData = reinterpret_cast<EffectRenderData*>(*(in_data->sequence_data));
+	EffectRenderData	*renderData = reinterpret_cast<EffectRenderData*>(*(in_data->sequence_data));
 	
 	std::cout << "Render Called flat=" << (renderData->flat ? "TRUE" : "FALSE");
 	//std::cout << " fragPath=" << renderData->fragPath;
@@ -602,10 +727,12 @@ Render(
 	try {
 		// always restore back AE's own OGL context
 		AESDK_OpenGL::SaveRestoreOGLContext oSavedContext;
-		
 		u_int16 width = in_data->width, height = in_data->height;
 		
 		SetPluginContext();
+		
+		// upload the input world to a texture
+		GLuint inputFrameTexture = UploadTexture(suites, &params[FILTER_INPUT]->u.ld, in_data);
 		
 		SetupRenderData(renderData, width, height);
 		
@@ -624,7 +751,7 @@ Render(
 			height - FIX_2_FLOAT(params[FILTER_MOUSE]->u.td.y_value)
 		};
 		MakeReadyToRender(renderData, renderData->beforeSwizzleTexture);
-		RenderGL(renderData, width, height, time, mouse);
+		RenderGL(renderData, width, height, time, mouse, inputFrameTexture);
 		
 		// Swizzle
 		MakeReadyToRender(renderData, renderData->outputFrameTexture);
@@ -656,6 +783,7 @@ Render(
 		// end of DownloadTexture
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
 		glBindTexture(GL_TEXTURE_2D, 0);
+		glDeleteTextures(1, &inputFrameTexture);
 		
 	} catch (PF_Err& thrown_err) {
 		err = thrown_err;
@@ -716,29 +844,55 @@ UpdateParameterUI(
 				  PF_ParamDef			*params[],
 				  PF_LayerDef			*outputP)
 {
-	PF_Err				err			= PF_Err_NONE;
+	PF_Err				err			= PF_Err_NONE,
+						err2		= PF_Err_NONE;
 	AEGP_SuiteHandler	suites(in_data->pica_basicP);
+	
+	EffectGlobalData	*globalData	= reinterpret_cast<EffectGlobalData*>(DH(out_data->global_data));
+	AEGP_EffectRefH		effectH		= NULL;
+	AEGP_StreamRefH		timeStreamH = NULL;
+	
 	
 	std::cout << "UpdateParameterUI Called" << std::endl;
 	
 	//	Before we can change the enabled/disabled state of parameters,
 	//	we need to make a copy (remember, parts of those passed into us
 	//	are read-only).
-	PF_ParamDef		paramsCopy[FILTER_NUM_PARAMS];
+	PF_ParamDef	paramsCopy[FILTER_NUM_PARAMS];
 	ERR(MakeParamCopy(params, paramsCopy));
 	
 	if (!err) {
 		
 		A_Boolean useLayerTime = params[FILTER_USE_LAYER_TIME_DISK_ID]->u.bd.value;
 		
+		/*
 		ToggleFlag(paramsCopy[FILTER_TIME_DISK_ID].ui_flags, PF_PUI_DISABLED, useLayerTime);
 		
 		ERR(suites.ParamUtilsSuite3()->PF_UpdateParamUI(in_data->effect_ref,
 														FILTER_TIME_DISK_ID,
-														&paramsCopy[FILTER_TIME_DISK_ID])); 
+														&paramsCopy[FILTER_TIME_DISK_ID]));
+		*/
+		
+		// Changing visibility of params in AE is handled through stream suites
+		ERR(suites.PFInterfaceSuite1()->AEGP_GetNewEffectForEffect(globalData->ID, in_data->effect_ref, &effectH));
+		
+		ERR(suites.StreamSuite2()->AEGP_GetNewEffectStreamByIndex(globalData->ID, effectH, FILTER_TIME_DISK_ID, &timeStreamH));
+		
+		// Toggle visibility of parameters
+		ERR(suites.DynamicStreamSuite2()->AEGP_SetDynamicStreamFlag(timeStreamH, AEGP_DynStreamFlag_HIDDEN, FALSE, useLayerTime));
+		
+		if (effectH) {
+			ERR2(suites.EffectSuite2()->AEGP_DisposeEffect(effectH));
+		}
+		if (timeStreamH) {
+			ERR2(suites.StreamSuite2()->AEGP_DisposeStream(timeStreamH));
+		}
+
+		if (!err){
+			out_data->out_flags |= PF_OutFlag_FORCE_RERENDER;
+		}
+		
 	}
-	
-	out_data->out_flags |= PF_OutFlag_REFRESH_UI | PF_OutFlag_FORCE_RERENDER;
 	
 	return err;
 }

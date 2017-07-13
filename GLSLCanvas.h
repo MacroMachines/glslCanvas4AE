@@ -67,6 +67,11 @@ enum {
 	FILTER_TIME_DISK_ID,
 	FILTER_MOUSE,
 	FILTER_SHOW_ERROR_DISK_ID,
+//	FILTER_TEX0_DISK_ID,
+//	FILTER_TEX1_DISK_ID,
+//	FILTER_TEX2_DISK_ID,
+//	FILTER_TEX3_DISK_ID,
+//	FILTER_TEX4_DISK_ID,
 	FILTER_NUM_PARAMS
 };
 
@@ -118,6 +123,18 @@ typedef struct EffectRenderData
 	A_char      fragPath[FRAGPATH_MAX_LEN + 1];
 	
 } EffectRenderData;
+
+typedef struct EffectGlobalData {
+	
+	EffectGlobalData() :
+		initialized(FALSE),
+		ID(0)
+	{
+	}
+	
+	PF_Boolean initialized;
+	AEGP_PluginID ID;
+} EffectGlobalData;
 
 //typedef struct {
 //	A_Boolean	flat;
