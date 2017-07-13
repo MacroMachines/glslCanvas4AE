@@ -14,7 +14,8 @@ namespace {
 	NSOpenGLContext		*context = 0;
 	std::string			resourcePath;
 	
-	GLuint swizzleProgram = 0;
+	GLuint swizzleOutputProgram = 0;
+    GLuint swizzleInputProgram  = 0;
 	
 	GLuint vao = 0;
 	GLuint quad = 0;
@@ -24,7 +25,6 @@ namespace {
 		
 		GLuint program = LoadShaders((resourcePath + "vertex-shader.vert").c_str(),
 									 fragmentFilePath.c_str());
-		
 		return program;
 	}
 	
@@ -57,12 +57,15 @@ namespace {
 		glBindVertexArray(0);
 	}
 	
-	void RenderQuad(EffectRenderData *renderData) {
+    void RenderQuad(EffectRenderData *renderData) {
+        
+        glBindVertexArray(vao);
 		glEnableVertexAttribArray(glGetAttribLocation(renderData->program, "position"));
 		glBindBuffer(GL_ARRAY_BUFFER, quad);
 		glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (void*)0);
 		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-		glDisableVertexAttribArray(0);
+        glDisableVertexAttribArray(0);
+        glBindVertexArray(0);
 	}
 	
 	
@@ -78,6 +81,25 @@ namespace {
 		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
 		glDrawBuffer(GL_COLOR_ATTACHMENT0);
 	}
+    
+    GLuint AllocateTexture(u_int16 width,
+                           u_int16 height,
+                           GLint format = GL_RGBA8,
+                           GLint filter = GL_NEAREST) {
+        
+        GLuint texture;
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        
+        // Give an empty image to OpenGL ( the last "0" )
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        
+        // Poor filtering. Needed !
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+        
+        return texture;
+    }
 	
 	void BindTextureToTarget(GLuint program, GLuint texture, std::string targetName) {
 		
@@ -99,9 +121,7 @@ namespace {
 		glUniform2f(glGetUniformLocation(renderData->program, "u_mouse"),		mouse.x, mouse.y);
 		BindTextureToTarget(renderData->program, tex0, std::string("u_tex0"));
 
-		glBindVertexArray(vao);
 		RenderQuad(renderData);
-		glBindVertexArray(0);
 		
 		glUseProgram(0);
 	}
@@ -109,23 +129,19 @@ namespace {
 	void SwizzleGL(EffectRenderData *renderData, GLfloat width, GLfloat height) {
 		
 		glClear(GL_COLOR_BUFFER_BIT);
-		glUseProgram(swizzleProgram);
+		glUseProgram(swizzleOutputProgram);
 		
-		glUniform2f(glGetUniformLocation(swizzleProgram, "u_resolution"),	width, height);
-		BindTextureToTarget(swizzleProgram, renderData->beforeSwizzleTexture, std::string("videoTexture"));
-		
-		// render
-		glBindVertexArray(vao);
+		glUniform2f(glGetUniformLocation(swizzleOutputProgram, "u_resolution"),	width, height);
+		BindTextureToTarget(swizzleOutputProgram, renderData->beforeSwizzleTexture, std::string("videoTexture"));
+    
 		RenderQuad(renderData);
-		glBindVertexArray(0);
 		
 		glUseProgram(0);
-		
-		
 		glFlush();
 	}
 	
 	GLuint UploadTexture(AEGP_SuiteHandler& suites,					// >>
+                         EffectRenderData* renderData,
 						//PF_PixelFormat			format,				// >>
 						PF_EffectWorld			*input_worldP,		// >>
 						PF_InData				*in_data)			// >>
@@ -134,25 +150,9 @@ namespace {
 						//float& multiplier16bitOut)					// <<
 	{
 		// - upload to texture memory
-		// - we will convert on-the-fly from ARGB to RGBA, and also to pre-multiplied alpha,
-		// using a fragment shader
-#ifdef _DEBUG
-		GLint nUnpackAlignment;
-		::glGetIntegerv(GL_UNPACK_ALIGNMENT, &nUnpackAlignment);
-		assert(nUnpackAlignment == 4);
-#endif
-		
-		GLuint texture;
-		glGenTextures(1, &texture);
-		glBindTexture(GL_TEXTURE_2D, texture);
-		
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, (GLint)GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, (GLint)GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, (GLint)GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, (GLint)GL_CLAMP_TO_EDGE);
-		
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, input_worldP->width, input_worldP->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-		
+        
+        GLuint rawTexture = AllocateTexture(input_worldP->width, input_worldP->height);
+
 		//multiplier16bitOut = 1.0f;
 		//switch (format) {
 			/*
@@ -209,7 +209,22 @@ namespace {
 		
 		//unbind all textures
 		glBindTexture(GL_TEXTURE_2D, 0);
-		
+        
+        // swizzle channels
+        GLuint texture = AllocateTexture(renderData->width, renderData->height);
+        MakeReadyToRender(renderData, texture);
+        
+        glClear(GL_COLOR_BUFFER_BIT);
+        glUseProgram(swizzleInputProgram);
+        
+        glUniform2f(glGetUniformLocation(swizzleOutputProgram, "u_resolution"), renderData->width, renderData->height);
+        BindTextureToTarget(swizzleOutputProgram, renderData->beforeSwizzleTexture, std::string("videoTexture"));
+        
+        RenderQuad(renderData);
+        
+        glUseProgram(0);
+        glDeleteTextures(1, &rawTexture);
+        
 		return texture;
 	}
 	
@@ -267,30 +282,12 @@ namespace {
 		
 		if (renderData->beforeSwizzleTexture == 0) {
 			std::cout << "beforeSwizzleTexture Reallocated" << std::endl;
-			
-			glGenTextures(1, &renderData->beforeSwizzleTexture);
-			glBindTexture(GL_TEXTURE_2D, renderData->beforeSwizzleTexture);
-			
-			// Give an empty image to OpenGL ( the last "0" )
-			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-			
-			// Poor filtering. Needed !
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            renderData->beforeSwizzleTexture = AllocateTexture(width, height);
 		}
 		
 		if (renderData->outputFrameTexture == 0) {
-			std::cout << "outputFrameTexture Reallocated" << std::endl;
-			
-			glGenTextures(1, &renderData->outputFrameTexture);
-			glBindTexture(GL_TEXTURE_2D, renderData->outputFrameTexture);
-			
-			// Give an empty image to OpenGL ( the last "0" )
-			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-			
-			// Poor filtering. Needed !
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            std::cout << "outputFrameTexture Reallocated" << std::endl;
+            renderData->outputFrameTexture = AllocateTexture(width, height);
 		}
 		
 		if (renderData->program == 0) {
@@ -400,7 +397,8 @@ GlobalSetup (
 		
 		CreateQuad();
 		
-		swizzleProgram = InitProgram(resourcePath + "swizzle.frag");
+        swizzleInputProgram = InitProgram(resourcePath + "swizzle-input.frag");
+        swizzleOutputProgram = InitProgram(resourcePath + "swizzle-output.frag");
 		
 		std::cout << std::endl
 			<< "OpenGL Version:			" << glGetString(GL_VERSION) << std::endl
@@ -724,20 +722,19 @@ Render(
 	std::cout << "Render Called flat=" << (renderData->flat ? "TRUE" : "FALSE");
 	//std::cout << " fragPath=" << renderData->fragPath;
 
-	try {
+    try {
+        u_int16 width = in_data->width, height = in_data->height;
+        
 		// always restore back AE's own OGL context
 		AESDK_OpenGL::SaveRestoreOGLContext oSavedContext;
-		u_int16 width = in_data->width, height = in_data->height;
-		
-		SetPluginContext();
+        SetPluginContext();
+        glViewport(0, 0, width, height);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
 		
 		// upload the input world to a texture
-		GLuint inputFrameTexture = UploadTexture(suites, &params[FILTER_INPUT]->u.ld, in_data);
+		GLuint inputFrameTexture = UploadTexture(suites, renderData, &params[FILTER_INPUT]->u.ld, in_data);
 		
 		SetupRenderData(renderData, width, height);
-		
-		glViewport(0, 0, width, height);
-		glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
 		
 		// RenderGL
 		GLfloat time;
